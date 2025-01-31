@@ -203,6 +203,11 @@ async function run() {
             res.send({ message: "User Already Exists !!" })
         })
 
+        // admin operation 
+        app.get("/all-user", async (req, res)=>{
+            res.send(await userCollection.find().toArray())
+        })
+
         app.get('/userInfo/:email', async (req, res) => {
             const email = req.params.email;
             const result = await userCollection.findOne({ email: email });
