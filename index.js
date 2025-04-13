@@ -1,14 +1,18 @@
 const express = require('express')
+const { SslCommerzPayment } = require('sslcommerz')
 const app = express()
 const port = process.env.PORT || 5000;
 const cors = require('cors')
+const { v4: uuidv4 } = require('uuid');
+require("dotenv").config();
 
 app.use(cors())
 app.use(express.json())
+app.use(express.urlencoded({ extended: true }));
 
 
 
-const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId, CURSOR_FLAGS } = require('mongodb');
 const uri = "mongodb+srv://tripty:tripty2002@cluster0.9zsd7h2.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
@@ -28,12 +32,137 @@ async function run() {
         const confirmedCollection = client.db('Charitydb').collection('confirmed')
         const blogCollection = client.db('Charitydb').collection('Blogs')
         const userCollection = client.db('Charitydb').collection('Users')
+        const paymentCollection = client.db('Charitydb').collection('Payments')
         // const upwardCollection = client.db('Charitydb').collection('Upwards')
         // const downwardCollection = client.db('Charitydb').collection('Downwards')
 
         app.get('/', (req, res) => {
             res.send('welcome to charity server')
         })
+        // Initialize payment
+        app.post('/init', async (req, res) => {
+
+            try {
+                const productInfo = {
+                    total_amount: req.body.total_amount,
+                    currency: 'BDT',
+                    tran_id: req.body.requestId,
+                    success_url: 'http://localhost:5000/success',
+                    fail_url: 'http://localhost:5000/failure',
+                    cancel_url: 'http://localhost:5000/cancel',
+                    ipn_url: 'http://localhost:5000/ipn',
+                    paymentStatus: 'pending',
+                    shipping_method: 'Courier',
+                    product_name: req.body.product_name,
+                    product_category: 'Electronic',
+                    product_profile: req.body.product_profile,
+                    product_image: req.body.product_image,
+                    cus_name: req.body.cus_name,
+                    cus_email: req.body.cus_email,
+                    cus_add1: 'Dhaka',
+                    cus_add2: 'Dhaka',
+                    cus_city: 'Dhaka',
+                    cus_state: 'Dhaka',
+                    cus_postcode: '1000',
+                    cus_country: 'Bangladesh',
+                    cus_phone: '01711111111',
+                    cus_fax: '01711111111',
+                    ship_name: req.body.cus_name,
+                    ship_add1: 'Dhaka',
+                    ship_add2: 'Dhaka',
+                    ship_city: 'Dhaka',
+                    ship_state: 'Dhaka',
+                    ship_postcode: 1000,
+                    ship_country: 'Bangladesh',
+                    multi_card_name: 'mastercard',
+                    value_a: 'ref001_A',
+                    value_b: 'ref002_B',
+                    value_c: 'ref003_C',
+                    value_d: 'ref004_D'
+                };
+
+                // Insert order info
+                const result = await paymentCollection.insertOne({
+                    total_amount: req.body.total_amount,
+                    product_name: req.body.product_name,
+                    product_profile: req.body.product_profile,
+                    product_image: req.body.product_image,
+                    cus_name: req.body.cus_name,
+                    cus_email: req.body.cus_email,
+                    requestId: req.body.requestId,
+                });
+
+                console.log(productInfo)
+
+                const sslcommer = new SslCommerzPayment(process.env.STORE_ID, process.env.STORE_PASSWORD, false) //true for live default false for sandbox
+                const data = await sslcommer.init(productInfo);
+                const info = { ...productInfo, ...data };
+
+                if (info.GatewayPageURL) {
+                    return res.json(info.GatewayPageURL);
+                } else {
+                    return res.status(400).json({
+                        message: "SSL session was not successful"
+                    });
+                }
+            }
+            catch (error) {
+                console.error(error)
+            }
+        });
+
+        app.post("/success", async (req, res) => {
+
+            console.log(req.body)
+
+            try {
+                const result = await paymentCollection.updateOne({ tran_id: req.body.tran_id }, {
+                    $set: {
+                        tran_id: req.body.tran_id,
+                        val_id: req.body.val_id
+                    }
+                })
+
+                await foodRequests.updateOne({ _id: new ObjectId(req.body.tran_id) }, {
+                    $set: { isPaid: true }
+                })
+
+                const foodReq = await foodRequests.findOne({ _id: new ObjectId(req.body.tran_id) })
+                const food = await foodCollection.findOne({ _id: new ObjectId(foodReq.fid) })
+
+                console.log(foodReq)
+                console.log(food)
+
+                const oldQuan = food.quantity
+                const newQuan = parseInt(oldQuan) - parseInt(foodReq.reqQuantity)
+
+                console.log(newQuan)
+
+                await foodCollection.updateOne({ _id: new ObjectId(foodReq.fid) }, {
+                    $set: {
+                        quantity: newQuan
+                    }
+                })
+
+
+                res.redirect(`http://localhost:5173/success`)
+            }
+            catch (err) {
+                console.error(err)
+            }
+
+        })
+        app.post("/failure", async (req, res) => {
+            const result = await paymentCollection.deleteOne({ tran_id: req.body.tran_id })
+
+            res.redirect(`http://localhost:5173/failure`)
+        })
+        app.post("/cancel", async (req, res) => {
+            const result = await paymentCollection.deleteOne({ tran_id: req.body.tran_id })
+
+            res.redirect(`http://localhost:5173`)
+        })
+
 
         app.get('/items', async (req, res) => {
             try {
@@ -141,6 +270,11 @@ async function run() {
 
         app.post('/requests', async (req, res) => {
             const foodForm = req.body;
+            const food = await foodCollection.findOne({ _id: new ObjectId(foodForm.fid) })
+            if (parseInt(foodForm.reqQuantity) > food.quantity) {
+                throw new Error("Quantilty Is less than requested quantity")
+            }
+
             const result = await foodRequests.insertOne(foodForm)
             res.send(result)
         })
@@ -204,7 +338,7 @@ async function run() {
         })
 
         // admin operation 
-        app.get("/all-user", async (req, res)=>{
+        app.get("/all-user", async (req, res) => {
             res.send(await userCollection.find().toArray())
         })
 
